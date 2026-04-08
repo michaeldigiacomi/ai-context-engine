@@ -21,12 +21,16 @@ Agent Integration:
 from context_engine.core import ContextEngine
 from context_engine.config import ContextEngineConfig
 from context_engine.providers import EmbeddingProvider, OllamaProvider
+from context_engine.memory_manager import MemoryManager
+from context_engine.working_memory import WorkingMemory
 
 __all__ = [
     "ContextEngine",
     "ContextEngineConfig",
     "EmbeddingProvider",
     "OllamaProvider",
+    "MemoryManager",
+    "WorkingMemory",
 ]
 
 # Agent module available at context_engine.agent
