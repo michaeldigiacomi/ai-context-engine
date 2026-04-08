@@ -208,6 +208,29 @@ def main():
     agent_info_parser = subparsers.add_parser("agent-info", help="Show information for AI agents")
     agent_info_parser.add_argument("--python", action="store_true", help="Show Python code example")
 
+    # working command
+    working_parser = subparsers.add_parser("working", help="Working memory commands")
+    working_subparsers = working_parser.add_subparsers(dest="working_command")
+
+    # working set
+    set_parser = working_subparsers.add_parser("set", help="Set session context")
+    set_parser.add_argument("key", help="Context key")
+    set_parser.add_argument("value", help="Context value")
+    set_parser.add_argument("--priority", type=int, default=5)
+    set_parser.add_argument("--ttl", type=int, default=60, help="TTL in minutes")
+
+    # working get
+    get_parser = working_subparsers.add_parser("get", help="Get session context")
+
+    # working tasks
+    tasks_parser = working_subparsers.add_parser("tasks", help="List tasks")
+    tasks_parser.add_argument("--status", help="Filter by status")
+
+    # working add-task
+    add_task_parser = working_subparsers.add_parser("add-task", help="Add a task")
+    add_task_parser.add_argument("description", help="Task description")
+    add_task_parser.add_argument("--priority", type=int, default=5)
+
     args = parser.parse_args()
 
     if not args.command:
@@ -279,6 +302,39 @@ def main():
 
         elif args.command == "agent-info":
             show_agent_info(show_python=args.python)
+
+        elif args.command == "working":
+            from context_engine.memory_manager import MemoryManager
+            manager = MemoryManager()
+
+            if args.working_command == "set":
+                manager.working.set_session_context(
+                    args.key, args.value,
+                    priority=args.priority, ttl_minutes=args.ttl
+                )
+                print(f"Set {args.key} = {args.value}")
+
+            elif args.working_command == "get":
+                ctx = manager.working.get_session_context()
+                if ctx:
+                    for k, v in ctx.items():
+                        print(f"{k}: {v}")
+                else:
+                    print("No session context")
+
+            elif args.working_command == "tasks":
+                tasks = manager.working.get_tasks(status=args.status)
+                for t in tasks:
+                    print(f"[{t['status']}] {t['task_id']}: {t['description']}")
+
+            elif args.working_command == "add-task":
+                task_id = manager.working.save_task(
+                    description=args.description,
+                    priority=args.priority
+                )
+                print(f"Created task: {task_id}")
+
+            manager.close()
 
     except Exception as e:
         print(f"Error: {e}")
