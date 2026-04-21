@@ -61,9 +61,14 @@ When context engine is pre-configured, agents automatically get:
 
 1. **Database Connection** - No setup needed
 2. **Embeddings** - Via configured Ollama/OpenAI
-3. **Namespace Isolation** - Each agent can have its own memory space
-4. **Session Tracking** - Conversations automatically tracked
-5. **TTL Support** - Temporary memories auto-expire
+3. **Embedding Cache** - LRU cache avoids re-embedding duplicate content (128 entries, thread-safe)
+4. **Namespace Isolation** - Each agent can have its own memory space
+5. **Session Tracking** - Conversations automatically tracked
+6. **TTL Support** - Temporary memories auto-expire
+7. **Relationships** - Typed directed links between memories (8 types)
+8. **Working Memory** - Fast session-scoped storage without embeddings
+9. **Compact Output** - Pipe-delimited CLI output for AI agents (`CTX_OUTPUT=compact`)
+10. **Agent Info** - Self-describing output for agent discovery (`ctx-engine agent-info`)
 
 ## Configuration Precedence
 
@@ -88,8 +93,66 @@ doc_id = memory.save("Test connection", category="test")
 results = memory.search("test connection")
 
 print(f"✓ Connected! Found {len(results)} results")
+
+# Test relationships
+doc_b = memory.save("Related test", category="test")
+memory.relate(doc_id, doc_b, rel_type="related_to")
+rels = memory.relations(doc_id)
+print(f"✓ Relationships work! Found {len(rels)} relations")
+
 memory.close()
 ```
+
+## CLI Commands
+
+When the context engine is configured, agents can use any of these CLI commands:
+
+```bash
+# Core operations
+ctx-engine save "content" --category cat --importance 8
+ctx-engine search "query" --limit 5
+ctx-engine search-one "query"              # Single best match
+ctx-engine get-context "query" --max-tokens 3000
+ctx-engine list --category preference
+ctx-engine delete <doc_id>
+ctx-engine cleanup
+ctx-engine init
+
+# Agent-optimized commands
+ctx-engine agent-info                      # Discover capabilities
+ctx-engine stats                           # Memory statistics
+ctx-engine peek <doc_id>                   # Full content of a memory
+ctx-engine count                           # Memory count
+
+# Relationships
+ctx-engine relate <source> <target> --rel-type depends_on
+ctx-engine relations <doc_id>               # Show relationships
+ctx-engine unrelate <source> <target> --rel-type depends_on
+
+# Working memory (session-scoped)
+ctx-engine working set "key" "value"
+ctx-engine working get
+ctx-engine working tasks
+ctx-engine working add-task "description" --status ready
+
+# Compact output for AI consumption
+CTX_OUTPUT=compact ctx-engine search "query"
+CTX_OUTPUT=compact ctx-engine agent-info
+CTX_OUTPUT=json ctx-engine stats
+```
+
+### VALID_REL_TYPES
+
+| Type | Meaning |
+|------|---------|
+| `related_to` | General association |
+| `depends_on` | Source requires target |
+| `supersedes` | Source replaces target |
+| `about` | Source is about target |
+| `blocks` | Source blocks target |
+| `references` | Source references target |
+| `contains` | Source contains target |
+| `derived_from` | Source derived from target |
 
 ## Common Patterns
 
@@ -134,6 +197,69 @@ class SessionAgent:
             assistant_response=response
         )
         return response
+```
+
+### Agent with Relationships
+
+```python
+from context_engine import ContextEngine
+
+class RelatingAgent:
+    def __init__(self):
+        self.memory = ContextEngine()
+    
+    def track_dependency(self, feature, blocker):
+        """Save both and link with depends_on."""
+        feat_id = self.memory.save(content=feature, category="feature")
+        block_id = self.memory.save(content=blocker, category="blocker")
+        self.memory.relate(feat_id, block_id, rel_type="depends_on")
+    
+    def find_blockers(self, feature_doc_id):
+        """Find what a feature depends on."""
+        return self.memory.relations(
+            feature_doc_id, direction="outgoing", rel_type="depends_on"
+        )
+    
+    def supersede(self, old_doc_id, new_doc_id):
+        """Mark new memory as replacing old one."""
+        self.memory.relate(new_doc_id, old_doc_id, rel_type="supersedes")
+```
+
+### Agent with Working Memory
+
+```python
+from context_engine import ContextEngine, WorkingMemory
+
+class TaskAgent:
+    """Agent that tracks current tasks in working memory."""
+    
+    def __init__(self):
+        self.memory = ContextEngine()       # Long-term semantic memory
+        self.working = WorkingMemory()      # Short-term session memory
+    
+    def start_session(self):
+        """Initialize working memory for a session."""
+        self.working.set_session_context("agent_status", "active")
+        self.working.set_session_context("step", "0")
+    
+    def work_on_task(self, description):
+        """Create and track a task."""
+        task_id = self.working.save_task(
+            description=description, status="in_progress"
+        )
+        # Also persist to long-term memory
+        self.memory.save(content=description, category="task")
+        return task_id
+    
+    def complete_task(self, task_id, result):
+        """Finish a task."""
+        self.working.update_task(
+            task_id, status="completed", result=result
+        )
+    
+    def get_session_state(self):
+        """Get all current working context."""
+        return self.working.get_session_context()
 ```
 
 ## Environment Variables
@@ -244,5 +370,9 @@ For agents, using an existing context engine is **zero-setup**:
 1. Import `ContextEngine` or `ContextAgent`
 2. Call `ContextEngine()` - config loads automatically
 3. Start saving/retrieving memories
+4. Use `relate()/unrelate()/relations()` for explicit relationships
+5. Use `WorkingMemory` for session-scoped short-term storage
+6. Set `CTX_OUTPUT=compact` for agent-friendly CLI output
+7. Run `ctx-engine agent-info` to discover available capabilities
 
-The context engine handles all the complexity (embeddings, database, etc.). Agents just use the simple API.
+The context engine handles all the complexity (embeddings, database, caching, etc.). Agents just use the simple API.

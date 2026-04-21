@@ -10,7 +10,13 @@ A reusable semantic memory/context engine using PostgreSQL + pgvector. Store and
 - **Pluggable Embeddings** - Ollama (default) or OpenAI
 - **TTL & Importance** - Temporary memories and priority scoring
 - **Category Organization** - Filter by source/category
-- **Agent Integration** - Built-in base class for AI agents
+- **Tags** - Array field for flexible labeling
+- **Explicit Relationships** - Typed directed links between memories (8 relationship types)
+- **Compact Agent Output** - Pipe-delimited, agent-friendly CLI format (`CTX_OUTPUT=compact`)
+- **Embedding Cache** - LRU cache avoids re-embedding duplicate content (128-entry, thread-safe)
+- **Working Memory** - Session-scoped, fast-access short-term storage (no embeddings)
+- **Lean Python API** - Direct attribute access (`ctx.search`, `ctx.save`), lazy connection init
+- **Agent Integration** - Built-in base class for AI agents plus `agent-info` subcommand
 
 ## Quick Start
 
@@ -72,18 +78,55 @@ ctx-engine get-context "Current session initialization" --max-tokens 3000
 
 # List
 ctx-engine list --category infrastructure
+
+# Create relationships between memories
+ctx-engine relate <source_doc_id> <target_doc_id> --rel-type depends_on
+ctx-engine relate <doc_id_a> <doc_id_b> --rel-type references
+
+# View relationships for a memory
+ctx-engine relations <doc_id>
+
+# Remove a relationship
+ctx-engine unrelate <source_doc_id> <target_doc_id> --rel-type depends_on
+
+# Compact output for AI agents (pipe-delimited)
+CTX_OUTPUT=compact ctx-engine search "k8s deployment"
+
+# Quick single-result search
+ctx-engine search-one "deployment status"
+
+# Working memory (session-scoped, no embeddings)
+ctx-engine working set "current_task" "Refactor auth module"
+ctx-engine working get
+ctx-engine working tasks
+ctx-engine working add-task "Fix login bug"
 ```
+
+### Relationship Types
+
+Valid relationship types (`VALID_REL_TYPES`):
+
+| Type | Meaning |
+|------|---------|
+| `related_to` | General association |
+| `depends_on` | Source requires target |
+| `supersedes` | Source replaces target |
+| `about` | Source is about target |
+| `blocks` | Source blocks target |
+| `references` | Source references target |
+| `contains` | Source contains target |
+| `derived_from` | Source derived from target |
 
 ## Python API
 
 ```python
 from context_engine import ContextEngine
 
-# Initialize (reads from env/config)
+# Initialize (reads from env/config, lazy connection)
 ctx = ContextEngine()
 
-# Save a memory
-ctx.save(
+# Save a memory (returns doc_id)
+doc_id = ctx.save(
     content="Deployed WebMonsters to k3s",
     category="infrastructure",
     importance=8.0,
@@ -97,10 +140,37 @@ context = ctx.get_context(
     max_tokens=4000
 )
 
-# Search
+# Search (lean API: ctx.search works directly)
 results = ctx.search("k8s deployment", limit=5, min_similarity=0.6)
 for r in results:
     print(f"[{r['similarity']:.2f}] {r['content']}")
+
+# Quick single-result search
+content = ctx.search_one("deployment status")
+
+# Create explicit relationships
+ctx.relate(source_doc_id, target_doc_id, rel_type="depends_on")
+ctx.relate(source_doc_id, target_doc_id, rel_type="references")
+
+# View relationships for a memory
+rels = ctx.relations(doc_id, direction="both")
+for r in rels:
+    print(f"[{r['direction']}] {r['rel_type']}: {r['content']}")
+
+# Remove a relationship
+ctx.unrelate(source_doc_id, target_doc_id, rel_type="depends_on")
+# Or remove all relationships between two memories
+ctx.unrelate(source_doc_id, target_doc_id)
+
+# Working memory (session-scoped, no embeddings)
+from context_engine import WorkingMemory
+wm = WorkingMemory()
+wm.set_session_context("current_task", "Refactor auth")
+task_id = wm.save_task(description="Fix login bug", status="ready")
+
+# Embedding cache stats
+stats = ctx.embedding_cache_stats()
+print(f"Cache: {stats['hits']} hits, {stats['misses']} misses")
 
 # Cleanup
 ctx.cleanup_expired()
@@ -133,6 +203,29 @@ agent.run()
 
 See [AGENT_SETUP.md](AGENT_SETUP.md) for quick agent setup (when context engine is already configured).
 See [AGENT_INTEGRATION.md](AGENT_INTEGRATION.md) for detailed integration patterns.
+
+## CLI Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `save` | Save a memory |
+| `search` | Semantic search for memories |
+| `search-one` | Return single best match content |
+| `get-context` | Get token-budgeted context |
+| `list` | List memories |
+| `delete` | Delete a memory |
+| `cleanup` | Delete expired memories |
+| `init` | Initialize database schema |
+| `agent-info` | Show info for AI agents (compact/json/text) |
+| `stats` | Show memory statistics |
+| `peek` | Show full content of a memory |
+| `count` | Print memory count |
+| `relate` | Create a relationship between two memories |
+| `unrelate` | Remove a relationship between memories |
+| `relations` | Show relationships for a memory |
+| `working` | Working memory commands (set/get/tasks/add-task) |
+
+Set `CTX_OUTPUT=compact` for pipe-delimited output suitable for AI agents.
 
 ## Configuration
 
@@ -192,25 +285,59 @@ GRANT ALL PRIVILEGES ON DATABASE context_engine TO ctx_user;
 ```
 Query Text
     ↓
-[Embedding] → 768-dim vector (Ollama: nomic-embed-text)
+[Embedding Cache] → check LRU cache (128 entries, thread-safe)
+    ↓ (cache miss)
+[Embedding] → 768-dim vector (Ollama: nomic-embed-text / OpenAI)
     ↓
 [pgvector Search] → Top-K similar memories (by namespace)
+    ↓
+[Relationship Graph] → Explicit typed edges (relationships table)
     ↓
 [Token Budget Filter] → Context within limit
     ↓
 LLM Context
 ```
 
+### Compact Output Format
+
+For AI agent consumption, set `CTX_OUTPUT=compact` for pipe-delimited output:
+
+```bash
+CTX_OUTPUT=compact ctx-engine search "k8s"
+# Output: doc_id|similarity|content
+# abc123|0.89|Deployed to k8s cluster
+
+CTX_OUTPUT=compact ctx-engine list
+# Output: doc_id|category|importance|content
+
+CTX_OUTPUT=compact ctx-engine agent-info
+# Output: version|namespace|commands|rel_types
+```
+
+Embedding cache stats and agent-info are also available programmatically:
+
+```python
+# Cache stats
+stats = ctx.embedding_cache_stats()
+# {"hits": 42, "misses": 8, "size": 15, "hit_rate": 0.84}
+
+# Clear cache
+ctx.clear_embedding_cache()
+```
+
 ## File Structure
 
 ```
 src/context_engine/
-├── __init__.py      # Public API
-├── config.py        # Configuration (env + config file)
-├── providers.py     # Embedding providers (Ollama, OpenAI)
-├── schema.py        # Database schema management
-├── core.py          # Main ContextEngine class
-└── cli.py           # CLI tool
+├── __init__.py           # Public API exports
+├── config.py             # Configuration (env + config file)
+├── providers.py          # Embedding providers (Ollama, OpenAI)
+├── schema.py             # Database schema management
+├── core.py               # Main ContextEngine class
+├── working_memory.py     # WorkingMemory - session-scoped short-term storage
+├── memory_manager.py     # MemoryManager - two-tier memory coordinator
+├── cli.py                # CLI tool
+└── agent.py              # ContextAgent - base class for AI agents
 ```
 
 ## Examples

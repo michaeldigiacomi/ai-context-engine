@@ -84,6 +84,102 @@ class MyAgent:
         )
 ```
 
+## API Reference
+
+### Core Methods
+
+| Method | Description |
+|--------|-------------|
+| `save(content, category, importance, ttl_days, tags)` | Save a memory, returns `doc_id` |
+| `search(query, limit, min_similarity, category, fields)` | Semantic search |
+| `search_one(query, category)` | Return single best match content |
+| `get_context(query, max_tokens, max_memories, category)` | Get token-budgeted context |
+| `list(limit, category)` | List memories |
+| `delete(doc_id)` | Delete a memory |
+| `cleanup_expired()` | Delete expired memories |
+| `peek(doc_id)` | Show full content of a memory |
+| `count(category)` | Count memories |
+| `stats()` | Show memory statistics |
+| `recall(query, limit, min_similarity, category)` | Quick recall with lean fields |
+
+### Relationship Methods
+
+| Method | Description |
+|--------|-------------|
+| `relate(source_doc_id, target_doc_id, rel_type)` | Create a typed relationship between two memories |
+| `unrelate(source_doc_id, target_doc_id, rel_type=None)` | Remove relationship(s). If `rel_type` is None, removes all types |
+| `relations(doc_id, direction="both", rel_type=None)` | Get relationships for a memory. Direction: `outgoing`, `incoming`, or `both` |
+
+### VALID_REL_TYPES
+
+The following relationship types are valid (defined as `ContextEngine.VALID_REL_TYPES`):
+
+```python
+VALID_REL_TYPES = {
+    "related_to",    # General association
+    "depends_on",    # Source requires target
+    "supersedes",    # Source replaces target
+    "about",         # Source is about target
+    "blocks",        # Source blocks target
+    "references",    # Source references target
+    "contains",      # Source contains target
+    "derived_from",  # Source derived from target
+}
+```
+
+### Embedding Cache
+
+By default, `ContextEngine` caches embedding results in an LRU cache (128 entries, thread-safe).
+This avoids re-embedding identical content across save and search operations.
+
+```python
+ctx = ContextEngine(cache_embeddings=True)  # default
+
+# Check cache performance
+stats = ctx.embedding_cache_stats()
+# {"hits": 42, "misses": 8, "size": 15, "hit_rate": 0.84}
+
+# Clear if needed
+ctx.clear_embedding_cache()
+
+# Disable caching
+ctx = ContextEngine(cache_embeddings=False)
+```
+
+### Compact Output Format
+
+For AI agents consuming CLI output, set `CTX_OUTPUT=compact` for pipe-delimited output:
+
+```bash
+CTX_OUTPUT=compact ctx-engine search "k8s"
+# doc_id|similarity|content
+
+CTX_OUTPUT=compact ctx-engine list
+# doc_id|category|importance|content
+
+CTX_OUTPUT=compact ctx-engine agent-info
+# version|namespace|commands|rel_types
+
+CTX_OUTPUT=compact ctx-engine relate <src> <tgt> --rel-type depends_on
+# relate|created|<source_doc_id>|<target_doc_id>|depends_on
+
+CTX_OUTPUT=compact ctx-engine relations <doc_id>
+# doc_id|rel_type|direction|content
+```
+
+JSON output is also available: `CTX_OUTPUT=json`
+
+### Agent-Info Command
+
+The `agent-info` subcommand provides a self-describing output for AI agents to discover available capabilities:
+
+```bash
+ctx-engine agent-info                # Human-readable text
+ctx-engine agent-info --python       # Include Python code example
+CTX_OUTPUT=compact ctx-engine agent-info  # Pipe-delimited
+CTX_OUTPUT=json ctx-engine agent-info     # JSON format
+```
+
 ## Integration Patterns
 
 ### Pattern 1: Simple Context Injection
@@ -271,6 +367,86 @@ Answer:"""
         return call_llm(prompt)
 ```
 
+### Pattern 5: Agent with Relationship Graph
+
+```python
+from context_engine import ContextEngine
+
+class GraphAgent:
+    """Agent that uses explicit relationships between memories."""
+    
+    def __init__(self):
+        self.memory = ContextEngine()
+    
+    def save_with_dependency(self, content, depends_on_content, **kwargs):
+        """Save a memory and link it to a dependency."""
+        doc_id = self.memory.save(content=content, **kwargs)
+        dep_results = self.memory.search(depends_on_content, limit=1)
+        if dep_results:
+            dep_id = dep_results[0]['doc_id']
+            self.memory.relate(doc_id, dep_id, rel_type="depends_on")
+        return doc_id
+    
+    def get_related_context(self, query, max_tokens=3000):
+        """Get context plus related memories via relationships."""
+        results = self.memory.search(query, limit=5)
+        context_parts = []
+        
+        for r in results:
+            context_parts.append(r['content'])
+            # Get relationships for each result
+            rels = self.memory.relations(r['doc_id'], direction="outgoing")
+            for rel in rels:
+                context_parts.append(
+                    f"  [{rel['rel_type']}] {rel['content']}"
+                )
+        
+        return "\n".join(context_parts)
+    
+    def link_as_reference(self, source_id, target_id):
+        """Mark source as referencing target."""
+        return self.memory.relate(source_id, target_id, rel_type="references")
+    
+    def mark_superseded(self, old_id, new_id):
+        """Mark new memory as superseding the old one."""
+        return self.memory.relate(new_id, old_id, rel_type="supersedes")
+```
+
+### Pattern 6: Agent with Working Memory
+
+```python
+from context_engine import ContextEngine, WorkingMemory
+
+class AgentWithWorkingMemory:
+    """Agent using both working memory (fast, session-scoped) and reference memory."""
+    
+    def __init__(self):
+        self.memory = ContextEngine()
+        self.working = WorkingMemory()
+    
+    def start_task(self, task_description):
+        """Start a new task with working memory tracking."""
+        task_id = self.working.save_task(
+            description=task_description,
+            status="in_progress"
+        )
+        self.working.set_session_context("current_task", task_id)
+        return task_id
+    
+    def decide(self, decision_text, context=None):
+        """Record a decision in working memory."""
+        return self.working.save_decision(
+            content=decision_text,
+            context=context
+        )
+    
+    def finish_task(self, task_id, result):
+        """Complete a task and optionally persist key facts."""
+        self.working.update_task(task_id, status="completed", result=result)
+        # Persist important facts to long-term memory
+        self.memory.save(content=result, category="task_result")
+```
+
 ## Framework-Specific Integrations
 
 ### LangChain Integration
@@ -294,6 +470,17 @@ class ContextEngineTool:
         """Save information to agent's memory."""
         doc_id = self.memory.save(content=content, category=category)
         return f"Saved to memory: {doc_id}"
+    
+    def relate_memories(self, source_id: str, target_id: str, rel_type: str = "related_to") -> str:
+        """Create a relationship between two memories."""
+        self.memory.relate(source_id, target_id, rel_type=rel_type)
+        return f"Created {rel_type} relationship: {source_id} -> {target_id}"
+    
+    def get_relations(self, doc_id: str) -> str:
+        """Get relationships for a memory."""
+        rels = self.memory.relations(doc_id)
+        lines = [f"{r['direction']} {r['rel_type']}: {r['content']}" for r in rels]
+        return "\n".join(lines) if lines else "No relationships found"
 ```
 
 ### CrewAI Integration
@@ -440,6 +627,32 @@ volumes:
   pgdata:
   ollama:
 ```
+
+## CLI Command Reference
+
+| Command | Description | Key Flags |
+|---------|-------------|-----------|
+| `save` | Save a memory | `--category`, `--importance`, `--ttl-days`, `--tags` |
+| `search` | Semantic search | `--limit`, `--min-similarity`, `--category` |
+| `search-one` | Single best match | `--category` |
+| `get-context` | Token-budgeted context | `--max-tokens`, `--max-memories` |
+| `list` | List memories | `--limit`, `--category` |
+| `delete` | Delete a memory | `doc_id` positional |
+| `cleanup` | Delete expired memories | — |
+| `init` | Initialize database schema | — |
+| `agent-info` | Info for AI agents | `--python`, `--verbose` |
+| `stats` | Memory statistics | — |
+| `peek` | Full content of a memory | `doc_id` positional |
+| `count` | Memory count | `--category` |
+| `relate` | Create relationship | `--rel-type` (required) |
+| `unrelate` | Remove relationship | `--rel-type` (optional, removes all if omitted) |
+| `relations` | Show relationships | `--direction`, `--rel-type` |
+| `working set` | Set session context | `key`, `value` positional |
+| `working get` | Get session context | — |
+| `working tasks` | List tasks | — |
+| `working add-task` | Add a task | `--status`, `--assigned-to` |
+
+Set `CTX_OUTPUT=compact` for pipe-delimited output. Set `CTX_OUTPUT=json` for JSON.
 
 ## Troubleshooting
 
