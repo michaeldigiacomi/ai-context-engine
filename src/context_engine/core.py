@@ -180,6 +180,9 @@ class ContextEngine:
         metadata: Optional[Dict[str, Any]] = None,
         source: Optional[str] = None,
         doc_id: Optional[str] = None,
+        source_hash: Optional[str] = None,
+        chunk_index: Optional[int] = None,
+        dedup_mode: str = "content",
     ) -> str:
         """
         Save a memory with automatic embedding.
@@ -193,7 +196,11 @@ class ContextEngine:
             tags: Optional list of tags
             metadata: Optional additional metadata
             source: Optional source identifier
-            doc_id: Optional stable ID (auto-generated from content if not provided)
+            doc_id: Optional stable ID (auto-generated if not provided)
+            source_hash: Hash of original source document (for pipeline dedup)
+            chunk_index: Position within chunked source document
+            dedup_mode: "content" (hash of content), "source" (hash of source+chunk),
+                       or "none" (use provided doc_id only)
 
         Returns:
             The doc_id of the saved memory
@@ -203,9 +210,17 @@ class ContextEngine:
         if len(content.strip()) < 10:
             return ""
 
-        # Generate doc_id if not provided
-        if not doc_id:
-            doc_id = hashlib.sha256(content.encode()).hexdigest()[:32]
+        # Generate doc_id based on deduplication mode
+        if dedup_mode == "source" and source_hash:
+            # Source-based: same document + same chunk = same memory
+            doc_id = f"{source_hash[:48]}_{chunk_index or 0}"
+        elif dedup_mode == "none" and doc_id:
+            # Use provided doc_id with no dedup logic
+            pass
+        else:
+            # Content-based dedup (default): hash of content
+            if not doc_id:
+                doc_id = hashlib.sha256(content.encode()).hexdigest()[:32]
 
         embedding = self._embed(content)
 
@@ -224,9 +239,9 @@ class ContextEngine:
             cur.execute("""
                 INSERT INTO memories
                 (doc_id, content, embedding, namespace, category, importance,
-                 expires_at, session_key, tags, metadata, source, created_at)
+                 expires_at, session_key, tags, metadata, source, source_hash, chunk_index, created_at)
                 VALUES (
-                    %s, %s, %s::vector, %s, %s, %s, %s, %s, %s, %s, %s, NOW()
+                    %s, %s, %s::vector, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()
                 )
                 ON CONFLICT (doc_id) DO UPDATE SET
                     content = EXCLUDED.content,
@@ -234,12 +249,14 @@ class ContextEngine:
                     category = EXCLUDED.category,
                     importance = EXCLUDED.importance,
                     metadata = EXCLUDED.metadata,
+                    source_hash = EXCLUDED.source_hash,
+                    chunk_index = EXCLUDED.chunk_index,
                     updated_at = NOW()
                 RETURNING id
             """, (
                 doc_id, content, embedding, self.namespace, category,
                 importance, expires_at, session_key, tags,
-                psycopg2.extras.Json(metadata), source
+                psycopg2.extras.Json(metadata), source, source_hash, chunk_index
             ))
 
             mem_id = cur.fetchone()[0]
@@ -363,6 +380,87 @@ class ContextEngine:
             cur.close()
         except psycopg2.Error:
             pass  # Non-critical, ignore
+
+    def get_by_source(
+        self,
+        source_hash: str,
+        namespace: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve all memories from a specific source document.
+        Useful for updating/deleting all chunks of a re-ingested document.
+
+        Args:
+            source_hash: The hash of the source document
+            namespace: Optional namespace override
+
+        Returns:
+            List of memory records ordered by chunk_index
+        """
+        self._ensure_initialized()
+
+        ns = namespace or self.namespace
+        conn = self._get_conn()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        try:
+            cur.execute("""
+                SELECT doc_id, content, category, source, source_hash, chunk_index,
+                       importance, tags, metadata, created_at, updated_at
+                FROM memories
+                WHERE namespace = %s
+                  AND source_hash = %s
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                ORDER BY chunk_index ASC, created_at ASC
+            """, (ns, source_hash))
+
+            rows = cur.fetchall()
+            return [self._clean_result(dict(row)) for row in rows]
+
+        except psycopg2.Error as e:
+            raise ContextEngineError(f"Failed to get by source: {e}") from e
+        finally:
+            cur.close()
+
+    def delete_by_source(
+        self,
+        source_hash: str,
+        namespace: Optional[str] = None,
+    ) -> int:
+        """
+        Delete all memories from a specific source document.
+        Useful for cleaning up old chunks before re-ingesting.
+
+        Args:
+            source_hash: The hash of the source document
+            namespace: Optional namespace override
+
+        Returns:
+            Number of deleted memories
+        """
+        self._ensure_initialized()
+
+        ns = namespace or self.namespace
+        conn = self._get_conn()
+        cur = conn.cursor()
+
+        try:
+            cur.execute("""
+                DELETE FROM memories
+                WHERE namespace = %s
+                  AND source_hash = %s
+                RETURNING id
+            """, (ns, source_hash))
+
+            deleted_ids = [row[0] for row in cur.fetchall()]
+            conn.commit()
+            return len(deleted_ids)
+
+        except psycopg2.Error as e:
+            conn.rollback()
+            raise ContextEngineError(f"Failed to delete by source: {e}") from e
+        finally:
+            cur.close()
 
     @staticmethod
     def _leanify_search(result: dict) -> dict:

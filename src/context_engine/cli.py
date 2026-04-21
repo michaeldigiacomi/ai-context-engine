@@ -546,6 +546,10 @@ def main():
     save_parser.add_argument("--tags", nargs="+", help="Tags")
     save_parser.add_argument("--source", help="Source identifier")
     save_parser.add_argument("--doc-id", help="Stable document ID")
+    save_parser.add_argument("--source-hash", help="Hash of original source document (for dedup)")
+    save_parser.add_argument("--chunk-index", type=int, help="Position within chunked source document")
+    save_parser.add_argument("--dedup-mode", choices=["content", "source", "none"], default="content",
+                             help="Deduplication mode: content (hash of content), source (hash of source+chunk), none (use doc-id)")
 
     # search command
     search_parser = subparsers.add_parser("search", help="Search memories")
@@ -670,6 +674,9 @@ def main():
                 tags=args.tags,
                 source=args.source,
                 doc_id=args.doc_id,
+                source_hash=args.source_hash,
+                chunk_index=args.chunk_index,
+                dedup_mode=args.dedup_mode,
             )
             if fmt == 'compact':
                 format_save_compact(doc_id)

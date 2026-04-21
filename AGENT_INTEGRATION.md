@@ -90,14 +90,18 @@ class MyAgent:
 
 | Method | Description |
 |--------|-------------|
-| `save(content, category, importance, ttl_days, tags)` | Save a memory, returns `doc_id` |
+| `save(content, category, importance, ttl_days, tags, source_hash, chunk_index, dedup_mode)` | Save a memory, returns `doc_id` |
 | `search(query, limit, min_similarity, category, fields)` | Semantic search |
 | `search_one(query, category)` | Return single best match content |
 | `get_context(query, max_tokens, max_memories, category)` | Get token-budgeted context |
+| `get_by_source(source_hash)` | Get all memories from a source document |
+| `delete_by_source(source_hash)` | Delete all memories from a source document |
 | `list(limit, category)` | List memories |
 | `delete(doc_id)` | Delete a memory |
 | `cleanup_expired()` | Delete expired memories |
 | `peek(doc_id)` | Show full content of a memory |
+
+### Deduplication Methods
 | `count(category)` | Count memories |
 | `stats()` | Show memory statistics |
 | `recall(query, limit, min_similarity, category)` | Quick recall with lean fields |
@@ -178,6 +182,45 @@ ctx-engine agent-info                # Human-readable text
 ctx-engine agent-info --python       # Include Python code example
 CTX_OUTPUT=compact ctx-engine agent-info  # Pipe-delimited
 CTX_OUTPUT=json ctx-engine agent-info     # JSON format
+```
+
+### Deduplication Methods
+
+The `save()` method supports three deduplication modes to prevent duplicate memories:
+
+| Mode | How it works | Best for |
+|------|--------------|----------|
+| `content` (default) | Hash of content | Ad-hoc memories, user inputs |
+| `source` | Hash of source document + chunk position | Document ingestion pipelines |
+| `none` | Use provided `doc_id` only | Manual ID management |
+
+```python
+# Content-based dedup (default) - same content = same memory
+doc_id = ctx.save("User likes Python", category="preference")
+# Running again updates the same memory, doesn't create duplicate
+
+# Source-based dedup - for document chunks
+# Same source document + same chunk position = same memory
+for i, chunk in enumerate(chunks):
+    ctx.save(
+        content=chunk,
+        category="document",
+        source_hash=hashlib.sha256(file_content).hexdigest(),
+        chunk_index=i,
+        dedup_mode="source"
+    )
+```
+
+### Source-Based Memory Management
+
+When ingesting documents, you often need to update or replace all chunks:
+
+```python
+# Get all memories from a source
+memories = ctx.get_by_source(source_hash="abc123")
+
+# Delete all chunks from a source (before re-ingesting)
+deleted_count = ctx.delete_by_source(source_hash="abc123")
 ```
 
 ## Integration Patterns
