@@ -1,26 +1,30 @@
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = "pgvector-context-engine"
-version = "0.1.0"
+name = "context-engine"
+version = "0.2.0"
 description = "Reusable semantic context/memory engine using PostgreSQL + pgvector"
 readme = "README.md"
-requires-python = ">=3.9"
 license = {text = "MIT"}
+requires-python = ">=3.11"
 authors = [
-    {name = "Your Name", email = "you@example.com"}
+    {name = "Michael Di Giacomi"},
 ]
-keywords = ["pgvector", "semantic-search", "memory", "context", "ai"]
+keywords = ["context-engine", "pgvector", "semantic-search", "memory", "context", "ai", "cli"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
 ]
 dependencies = [
     "psycopg2-binary>=2.9",
@@ -28,24 +32,48 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-asyncio>=0.21",
-    "pytest-cov>=4.0",
-]
 openai = [
     "openai>=1.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "black==24.10.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
 ]
 
 [project.scripts]
 ctx-engine = "context_engine.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/you/pgvector-context-engine"
-Repository = "https://github.com/you/pgvector-context-engine"
+Homepage = "https://github.com/michaeldigiacomi/context-engine"
+Repository = "https://github.com/michaeldigiacomi/context-engine"
+Issues = "https://github.com/michaeldigiacomi/context-engine/issues"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/context_engine"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311", "py312", "py313"]
+required-version = "24.10.0"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -55,16 +83,12 @@ python_functions = ["test_*"]
 markers = [
     "integration: marks tests as integration tests (requires PostgreSQL)",
 ]
-addopts = [
-    "--strict-markers",
-]
+addopts = "--strict-markers --cov=context_engine --cov-report=term-missing"
+asyncio_mode = "auto"
 
 [tool.coverage.run]
-source = ["src/context_engine"]
-omit = [
-    "*/tests/*",
-    "*/__pycache__/*",
-]
+source = ["context_engine"]
+omit = ["tests/*"]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -72,5 +96,4 @@ exclude_lines = [
     "def __repr__",
     "raise AssertionError",
     "raise NotImplementedError",
-    "if __name__ == .__main__.:",
 ]

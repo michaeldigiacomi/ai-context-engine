@@ -49,13 +49,27 @@ class OllamaProvider(EmbeddingProvider):
 
     def embed(self, text: str) -> List[float]:
         try:
-            response = requests.post(
-                f"{self.url}/api/embeddings",
-                json={"model": self.model, "prompt": text},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            return response.json()["embedding"]
+            # Try new /api/embed endpoint first (Ollama >= 0.20)
+            try:
+                response = requests.post(
+                    f"{self.url}/api/embed",
+                    json={"model": self.model, "input": text},
+                    timeout=self.timeout,
+                )
+                if response.status_code == 404:
+                    # Fall back to legacy /api/embeddings for older Ollama
+                    response = requests.post(
+                        f"{self.url}/api/embeddings",
+                        json={"model": self.model, "prompt": text},
+                        timeout=self.timeout,
+                    )
+                    response.raise_for_status()
+                    return response.json()["embedding"]
+                response.raise_for_status()
+                return response.json()["embeddings"][0]
+            except KeyError:
+                # Fallback: try legacy response format
+                return response.json()["embedding"]
         except requests.exceptions.RequestException as e:
             raise EmbeddingError(f"Failed to get embedding from Ollama: {e}") from e
 
